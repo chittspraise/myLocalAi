@@ -1,0 +1,125 @@
+.container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  padding: 20px 0;
+  box-sizing: border-box;
+}
+.response{
+color:white
+}
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  width: 500px;
+  max-width: 90%;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+  padding: 10px 0;
+}
+
+.conversation::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
+.userMessage {
+  background: #000;
+  color: white;
+  padding: 10px 15px;
+  border-radius: 15px;
+  max-width: 80%;
+  margin-left: auto;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.aiMessage {
+  background: #f1f1f1;
+  color: black;
+  padding: 10px 15px;
+  border-radius: 15px;
+  max-width: 80%;
+  margin-right: auto;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.errorMessage {
+  background: #d32f2f;
+  color: white;
+  padding: 10px 15px;
+  border-radius: 15px;
+  max-width: 80%;
+  margin-right: auto;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.inputRow {
+  display: flex;
+  flex-direction: row;
+  flex-shrink: 0;
+}
+
+.clipIcon {
+  height: 50px;
+  margin-left: 50px;
+}
+
+.clipIcon:hover {
+  transform: scale(1.1);
+}
+
+.messageInput {
+  margin-left: 10px;
+  height: 50px;
+  width: 400px;
+  background-color: rgb(17, 17, 17);
+  border: 0;
+  color: white;
+  padding: 5px;
+}
+
+.messageInput::placeholder {
+  color: rgb(112, 108, 108);
+}
+
+.searchIcon {
+  height: 70px;
+  margin-left: 0;
+}
+
+.searchIcon:hover {
+  transform: scale(1.1);
+}
+.dataInput {
+margin-left :10px;
+height:40px;
+flex-shrink:0
+}
+.dataInput:hover{
+  transform: scale(1.1)
+}
+.dataButton{
+background:none;
+border:none
+}
+
