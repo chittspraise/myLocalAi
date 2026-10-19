@@ -1,14 +1,31 @@
 'use client'
 import {useState, useRef, useEffect} from 'react'
 import styles from './page.module.css'
+import {supabaseBrowserClient} from '@/lib/supabase/client.js'
+import{useRouter} from 'next/navigation'
 
 export default  function Home (){
 const[fileName,setFileName]=useState('')
 const[message,setMessage]=useState('')
 const[error,setError] =useState('')
 const[conversation,setConversation]=useState([])
+
+const router =useRouter()
 const[file,setFile]=useState(null)
+
+const supabase = supabaseBrowserClient
+async function signout(){
+const{error} = await supabase.auth.signOut()
+
+if(error){
+console.log(error.message)
+setError(error.message)
+}
+router.refresh()
+}
+
 const conversationEndRef = useRef(null)
+
 
 useEffect(() => {
   conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -144,10 +161,58 @@ return
   setError(error.message || 'An Error occured, Please try again')
   console.log(error)
 }
+
+}
+
+async function  addDocument(){
+if(!file){
+  setError('no document attached')
+}
+const formData = new FormData()
+formData.append('file',file)
+
+const userMessage={
+  role:'user',
+  content: file.name
+}
+
+setConversation(prev=>[...prev,userMessage])
+try{ 
+  const response = await fetch('/api/documents',{
+    method:'POST',
+    body:formData
+  })
+  const data = await response.json()
+  if(!response.ok){
+    throw new Error('failed to upload document')
+  }
+   console.log(data)
+  const aiMessage={
+    role:'AI',
+    content:data.answer
+  }
+setConversation(prev=>[...prev,aiMessage])
+
+
+}catch(error){
+setError(error.message)
+}
+
 }
 return (
+  <>
+  <button className={styles.signoutButton}
+  onClick={signout} >
+    <img
+    className={styles.signoutIcon}
+    src={'/images/out.png'}
+    />
+    
+  </button>
  <div className={styles.container}>
+   
   <div className={styles.conversation}>
+ 
   {conversation.map((message,index)=>{
     return (
     <div key={index}
@@ -200,6 +265,12 @@ return (
    />
   </button>
   
+  <img
+  src='/images/database.png'
+  className={styles.dataInput}
+  onClick={addDocument}
+  />
+  
   <input 
   className={styles.messageInput}
   placeholder='What can I help you with...'
@@ -213,5 +284,6 @@ return (
   />
 </div>
  </div>
+ </>
 )
 }

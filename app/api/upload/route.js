@@ -44,9 +44,8 @@ try{
   throw new Error('failed to respond')
   }
    
-
-   return Response.json({
-    message: data.message.content
+ return Response.json({
+ message: data.message.content
     
  })
 

@@ -1,256 +1,331 @@
+
 import { supabaseServerClient } from '@/lib/supabase/server'
 import pdf from 'pdf-parse/lib/pdf-parse.js'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import path from 'node:path'
 
+const OLLAMA_URL = 'http://localhost:11434'
+const MODEL = 'deepseek-r1:1.5b'
 
-export async function POST (request){
-const supabase = supabaseServerClient
-
-if(request.headers.get('content-type')?.includes('multipart/form-data')){
-const formData = await request.formData()
-
-const  file = formData.get('file')
-const question = formData.get('question')
-
-if(!file){
-return;
-}
-
-
-const buffer = Buffer.from(await file.arrayBuffer())
-const parse = pdf(buffer)
-const result = await parse
-
-const info = result.text.split(/Answer Key\s*&\s*Solutions/i)[0]
-async  function chunkInfo(text,chunkSize,overlap){
- const questions = text.split(/(?=Question\s+\d+\b)/i)
- const validQuestions = questions.filter(q =>
-  /^Question\s+\d+\b/i.test(q.trim())
-)
- if(validQuestions.length>1){
-  return validQuestions.map(content=>({
-   content:content.trim(),
-   number:content.match(/question\s+(\d+)/i)?.[1]
-  }))
- 
- }
-
- const words = text.split(/\s+/)
- const chunks= []
-
- for(let i=0;i<words.length;i+=chunkSize-overlap){
-  const chunk= words.slice(i,i+chunkSize).join(' ') 
-  chunks.push({
-    content:chunk
-  })
- }
-return chunks
-}
- const chunks = await chunkInfo(info,50,10)
- console.log(chunks.map(q => q.number))
-
- console.log(chunks)
-async function createChunkEmbeddings(chunks){
-const embeddings = []
-
- try{
-  for( const chunk of chunks){
-  const response = await fetch('http://localhost:11434/api/embed',{
-    method:'POST',
-    headers:{
-      'Content-Type':'application/json'
-    },
-    body:JSON.stringify({
-    model:'nomic-embed-text',
-    input:chunk.content
+// Ask DeepSeek to generate an answer.
+async function askDeepSeek(prompt) {
+  const response = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      stream: false
     })
-   })
-  const data = await response.json()
-  if(!response.ok){
-  throw new Error('failed to embedd')
+  })
+
+  const text = await response.text()
+
+  if (!response.ok) {
+    throw new Error(`Ollama chat failed: ${text}`)
   }
-  embeddings.push(data.embeddings[0]) 
-}
-return embeddings 
 
-}catch(error){
-  throw new Error('failed.Please try again')
-}
+  let data
+
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new Error(`Ollama returned invalid JSON: ${text}`)
+  }
+
+  if (!data.message?.content) {
+    throw new Error('Ollama returned an empty answer')
+  }
+
+  return data.message.content
 }
 
-const embeddings = await createChunkEmbeddings(chunks)
+// Classify the question before choosing a data source.
+async function classifyQuestion(question) {
+  const answer = await askDeepSeek(`
+Classify this question into exactly one category:
 
-async function semanticSearch(embeddings,count){
-const results=[]
-for (const embedding of embeddings){
-const {data,error} = await supabase
-.rpc('match_documents',{
-query_embedding:embedding,
-match_count:count
-})
-if(error){
-console.log(error)
-throw new Error(error.message)
-}
-results.push(data)
+travelers - asks about traveler database records
+documents - asks about information in stored documents
+general - asks about anything else
 
+Return only the category name.
+
+Question: ${question}
+`)
+
+  // Remove DeepSeek's optional reasoning section.
+  const finalAnswer = answer.replace(
+    /<think>[\s\S]*?<\/think>/gi,
+    ''
+  ).trim().toLowerCase()
+
+  const match = finalAnswer.match(/\b(travelers|documents|general)\b/)
+
+  return match?.[1] || 'general'
 }
-return results
+
+// Connect to MCP, call the traveler tool, then close the connection.
+async function getTravelerContext() {
+  const client = new Client({
+    name: 'myai-agent',
+    version: '1.0.0'
+  })
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(process.cwd(), 'mcp-server.js')],
+    cwd: process.cwd()
+  })
+
+  try {
+    await client.connect(transport)
+
+    const result = await client.callTool({
+      name: 'query_travelers',
+      arguments: {}
+    })
+
+    if (result.isError) {
+      throw new Error('MCP traveler query failed')
+    }
+
+    return result.content
+      .filter(item => item.type === 'text')
+      .map(item => item.text)
+      .join('\n')
+  } finally {
+    await client.close()
+  }
 }
-const semanticResults =  (await  semanticSearch (embeddings,3))
-const questionContext = semanticResults
-.map((results,index)=>({
-  question:chunks[index].content,
-  number:chunks[index].number?? index+1,
-  context: results.map(item=>item.content).join('\n\n')
-}))
-console.log(JSON.stringify(questionContext, null, 2))
-try{
-  const response = await fetch('http://localhost:11434/api/chat',{
-  method:'POST' ,
-  headers:{
-    'Content-Type':'application/json'
-  },
-  body:JSON.stringify({
-   model:'deepseek-r1:1.5b',
-   messages:[{
-    role:'user',
-    content:  `
+
+// Create an embedding and retrieve relevant documents.
+async function searchDocuments(supabase, question) {
+  const response = await fetch(`${OLLAMA_URL}/api/embed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'nomic-embed-text',
+      input: question
+    })
+  })
+
+  const text = await response.text()
+
+  if (!response.ok) {
+    throw new Error(`Embedding failed: ${text}`)
+  }
+
+  let embeddingData
+
+  try {
+    embeddingData = JSON.parse(text)
+  } catch {
+    throw new Error(`Invalid embedding response: ${text}`)
+  }
+
+  const { data, error } = await supabase.rpc('match_documents', {
+    query_embedding: embeddingData.embeddings[0],
+    match_count: 3
+  })
+
+  if (error) throw error
+
+  return data.map(item => item.content).join('\n\n')
+}
+
+export async function POST(request) {
+  const supabase = supabaseServerClient
+
+  try {
+    // PDF QUESTIONS: retain your existing document workflow.
+    if (
+      request.headers.get('content-type')
+        ?.includes('multipart/form-data')
+    ) {
+      const formData = await request.formData()
+      const file = formData.get('file')
+      const question = formData.get('question')
+
+      if (!file || typeof file.arrayBuffer !== 'function') {
+        return Response.json(
+          { message: 'No valid file attached' },
+          { status: 400 }
+        )
+      }
+
+      const buffer = Buffer.from(await file.arrayBuffer())
+      const parsedPdf = await pdf(buffer)
+
+      const info = parsedPdf.text.split(
+        /Answer Key\s*&\s*Solutions/i
+      )[0]
+
+      function chunkInfo(text, chunkSize, overlap) {
+        const questions = text.split(
+          /(?=Question\s+\d+\b)/i
+        )
+
+        const validQuestions = questions.filter(q =>
+          /^Question\s+\d+\b/i.test(q.trim())
+        )
+
+        if (validQuestions.length > 1) {
+          return validQuestions.map(content => ({
+            content: content.trim(),
+            number: content.match(
+              /question\s+(\d+)/i
+            )?.[1]
+          }))
+        }
+
+        const words = text.split(/\s+/)
+        const chunks = []
+
+        for (
+          let i = 0;
+          i < words.length;
+          i += chunkSize - overlap
+        ) {
+          chunks.push({
+            content: words.slice(i, i + chunkSize).join(' ')
+          })
+        }
+
+        return chunks
+      }
+
+      const chunks = chunkInfo(info, 50, 10)
+      const questionContext = []
+
+      for (const chunk of chunks) {
+        const response = await fetch(`${OLLAMA_URL}/api/embed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'nomic-embed-text',
+            input: chunk.content
+          })
+        })
+
+        const text = await response.text()
+
+        if (!response.ok) {
+          throw new Error(`Embedding failed: ${text}`)
+        }
+
+        let embeddingData
+
+        try {
+          embeddingData = JSON.parse(text)
+        } catch {
+          throw new Error(`Invalid embedding response: ${text}`)
+        }
+
+        const { data, error } = await supabase.rpc(
+          'match_documents',
+          {
+            query_embedding: embeddingData.embeddings[0],
+            match_count: 3
+          }
+        )
+
+        if (error) throw error
+
+        questionContext.push({
+          question: chunk.content,
+          number: chunk.number,
+          context: data.map(item => item.content).join('\n\n')
+        })
+      }
+
+      const answer = await askDeepSeek(`
 You are a document question-answering assistant.
 
-Instructions:
-1. Answer the user's request using only the provided context.
-2. If a question cannot be answered from the context, say "I don't know."
-3. Do not guess or invent information.
+Answer the user's exact question using the supplied context.
+Do not invent facts. If the context has no useful information,
+say "I don't know."
 
 User's request:
-${question || 'Answer the following questions from this paper.'}
+${question || 'Answer the questions from this paper.'}
 
 Questions and relevant context:
 ${JSON.stringify(questionContext, null, 2)}
-`
-   }],
-   
-   stream:false
-  })
-  })
+`)
 
-const data = await response.json()
-console.log(data)
-if(!response.ok){
-  throw new Error('failed to respond')
-}
-return Response.json({
-answer: data.message.content
-})
-}catch(error){
-  return Response.json({
-   error:'failed to respond' 
-  })
-}
+      return Response.json({ answer })
+    }
 
-}else{
+    // NORMAL TEXT QUESTIONS.
+    const body = await request.json()
+    const question = body.question
 
-const body = await request.json()
-const question = body.question
+    if (!question?.trim()) {
+      return Response.json(
+        { message: 'Please enter a question' },
+        { status: 400 }
+      )
+    }
 
+    // Decide which source is needed.
+    const decision = await classifyQuestion(question)
+    console.log('Question category:', decision)
 
-async function createQuestionEmbedding (question){
- try {const response = await  fetch('http://localhost:11434/api/embed',{
-  method:'POST',
-  headers:{
-    'Content-Type':'application/json'
-  },
-  body:JSON.stringify({
-  model:'nomic-embed-text',
-  input : question
-  }),
-  
-})
-const data = await response.json()
-if(!response.ok){
-  console.log(data.error)
-  throw new Error('failed to embedd')
-}
+    // TRAVELERS: use MCP only.
+    if (decision === 'travelers') {
+      const travelerContext = await getTravelerContext()
 
-return data.embeddings[0]
+      const answer = await askDeepSeek(`
+Answer the user's question using the traveler database results.
+Do not invent records. If the results do not answer the question,
+say so.
 
- }catch(error){
- console.log(error)
- }
+Traveler database results:
+${travelerContext}
 
-}
-const questionEmbedding = await createQuestionEmbedding(question)
+Question:
+${question}
+`)
 
-async function semanticSearch(questionEmbedding,count){
-const {data,error}= await supabase
-.rpc('match_documents',{
-  query_embedding:questionEmbedding,
-  match_count:count
-})
-if(error){
-  console.log(data)
-}
+      return Response.json({ answer })
+    }
 
+    // DOCUMENTS: search Supabase only.
+    if (decision === 'documents') {
+      const context = await searchDocuments(supabase, question)
 
-return data
-}
+      const answer = await askDeepSeek(`
+Answer the user's question using the document context.
+Do not invent facts. If the context is irrelevant or insufficient,
+say "I don't know."
 
-const semanticInfo= await semanticSearch(questionEmbedding,3)
-
-const context = semanticInfo.map((item)=>(
- item.content 
-)).join('\n\n')
-console.log(context)
-
-try{
-const response = await fetch('http://localhost:11434/api/chat',{
-  method:'POST',
-  headers:{
-    'Content-Type':'application/json'
-  },
-  body: JSON.stringify({
-  model: 'deepseek-r1:1.5b',
-  messages: [{
-    role: 'user',
-    content: `
-You are a document question-answering assistant.
-
-Instructions:
-1. Answer ONLY using the information in the context.
-2. If the context does not contain enough information to answer, say "I don't know."
-3. Do not use your own knowledge.
-4. Do not guess or make up information.
-
-Context:
+Document context:
 ${context}
 
 Question:
 ${question}
+`)
 
-Answer:
-`
-  }],
-  stream: false
-})
-})
+      return Response.json({ answer })
+    }
 
-const data = await response.json()
-console.log(data)
+    // GENERAL: do not call MCP or search Supabase.
+    const answer = await askDeepSeek(`
+Answer the user's question directly and accurately.
+If you do not know the answer, say so.
 
-if(!response.ok){
-throw new Error('failed to respond')
-}
-return Response.json({
- answer: data.message?.content
-})
+Question:
+${question}
+`)
 
-}catch(error){
-console.log(error)
+    return Response.json({ answer })
+  } catch (error) {
+    console.error('AI route error:', error)
 
-return Response.json({
- message: error.message || 'An error occurred' 
-}, { status: 500 })
-}
-}
-
+    return Response.json(
+      { message: error.message || 'An error occurred' },
+      { status: 500 }
+    )
+  }
 }
