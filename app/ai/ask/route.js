@@ -43,7 +43,7 @@ async function askDeepSeek(prompt) {
 
 // Classify the question before choosing a data source.
 async function classifyQuestion(question) {
-  const answer = await askDeepSeek(`
+const answer = await askDeepSeek(`
 Classify this question into exactly one category:
 
 travelers - asks about traveler database records

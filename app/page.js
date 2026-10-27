@@ -9,6 +9,7 @@ const[fileName,setFileName]=useState('')
 const[message,setMessage]=useState('')
 const[error,setError] =useState('')
 const[conversation,setConversation]=useState([])
+const[isMcp,setMcp]= useState(false)
 
 const router =useRouter()
 const[file,setFile]=useState(null)
@@ -199,6 +200,54 @@ setError(error.message)
 }
 
 }
+
+async function mcp(){
+ if(!message){
+  setError('no message to send')
+ }
+const userMessage={
+  
+  role:'user',
+  content: message
+}
+
+setMessage('')
+
+setConversation((prev)=>[...prev,userMessage])
+try{
+  const response = await fetch('api/mcp',{
+    method:'POST',
+    headers:{
+      'Content-type':'application/json'
+    },
+    body:JSON.stringify({
+    message:message  
+    })
+  })
+  if(!response.ok){
+    console.log(error.message)
+    throw new Error ('failed to respond ,try again')
+  }
+
+ const data = await response.json()
+ console.log(data.answer ,typeof data.answer)
+ const aiMessage={
+    role:'MCP',
+    content: typeof data.answer =='string'? data.answer: JSON.stringify(data.answer)
+  }
+setConversation((prev)=>[...prev,aiMessage])
+ 
+}catch(error){
+setError(error.message)
+
+}
+}
+
+function handleMcp(){
+  setMcp(prev=>!prev)
+}
+
+
 return (
   <>
   <button className={styles.signoutButton}
@@ -273,15 +322,25 @@ return (
   
   <input 
   className={styles.messageInput}
-  placeholder='What can I help you with...'
+  placeholder=  {isMcp?'MCP mode':'What can i help you with?'}
   value={message}
   onChange={(e)=>handleText(e)}
-  onKeyDown={(e)=>{if(e.key === 'Enter') sendMessage()}}
+  onKeyDown={(e)=>{if(e.key === 'Enter') isMcp?mcp():sendMessage()}}
   />
   <img src={'/images/si.png'}
   className={styles.searchIcon}
-  onClick={sendMessage}
+  onClick={isMcp? mcp: sendMessage}
   />
+  <button className={styles.mcpbutton}
+  onClick={handleMcp
+  }
+  >
+    <img src={'/images/mcp.png'}
+     className ={styles.mcpicon}
+    
+    />
+  </button>
+
 </div>
  </div>
  </>

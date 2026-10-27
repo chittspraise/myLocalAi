@@ -11,7 +11,6 @@ return Response.json({
 error:'failed to receive file'  
 })
 }
-
 const buffer = Buffer.from(await file.arrayBuffer())
 const parse =  pdf(buffer)
 const data = await parse
@@ -36,8 +35,6 @@ console.log(data)
       error:'failed to load information'
    })
 }
-
-
 return Response.json({
    answer: text
 })
